@@ -17,7 +17,7 @@ import networkx as nx
 import numpy as np
 from operator import itemgetter
 from collections import Counter
-import re, random, datetime, urlparse, urllib2, simplejson, copy
+import re, random, datetime, urlparse, urllib2, simplejson, copy, itertools
 import pandas as pd
 from bs4 import BeautifulSoup
 
@@ -133,7 +133,7 @@ def cast_to_unicode(string):
         string2 = string
     return string2
 
-def chunk_maker(a_list,size):
+def chunk_maker(a_list,size=49):
     chunk_num = len(a_list)/size
     chunks = list()
     for c in range(chunk_num + 1):
@@ -282,11 +282,12 @@ def get_page_revisions(article_title,dt_start=datetime.datetime(2001,1,1),dt_end
             include all properties as described by revision_properties, and will also include the
             title and id of the source article. 
     '''
-    article_title = rename_on_redirect(article_title,lang=lang)
+    #article_title = rename_on_redirect(article_title,lang=lang)
     dt_start_string = convert_from_datetime(dt_start)
     dt_end_string = convert_from_datetime(dt_end) 
-    revisions = list()
+    #revisions = list()
     result = wikipedia_query({'titles': article_title,
+                              'redirects': 'True',
                               'prop': 'revisions',
                               'rvprop': 'ids|timestamp|user|userid|size|comment',
                               'rvlimit': '5000',
@@ -298,18 +299,23 @@ def get_page_revisions(article_title,dt_start=datetime.datetime(2001,1,1),dt_end
             page_number = result['pages'].keys()[0]
             try:
                 r = result['pages'][page_number]['revisions']
-                for revision in r:
-                        revision['pageid'] = page_number
-                        revision['title'] = result['pages'][page_number]['title']
-                        # Sometimes the size key is not present, so we'll set it to 0 in those cases
-                        revision['username'] = revision['user']
-                        revision['size'] = revision.get('size', 0)
-                        revision['timestamp'] = convert_to_datetime(revision['timestamp'])
-                        revisions.append(revision)
-            except KeyError:
-                revisions = list()
-    return revisions
-
+                _df = pd.DataFrame(r)
+                _df['timestamp'] = pd.to_datetime(_df['timestamp'])
+                _df = _df.sort('timestamp',ascending=True,inplace=False).reset_index(drop=True)
+                _df.index.name = 'revision'
+                _df = _df.reset_index()
+				
+				_df['page'] = [page_number]*len(_df)
+				_df['page_title'] = [article_title]*len(_df)
+                _df['date'] = _df['timestamp'].apply(lambda x:x.date())
+                _df['diff'] = _df['size'].diff()
+                _df['unique_users'] = [len(_df['user'].ix[:i].unique()) for i in iter(_df.index)]
+                _df['latency'] = _df['timestamp'].diff().apply(lambda x: x/np.timedelta64(1,'s'))
+                for _col in [_c for _c in _df.columns if _c in ['anon','commenthidden','userhidden']]:
+				    _df[_col] = _df[_col].notnull()
+                return _df
+            except:
+                return pd.DataFrame()
 def make_page_alters(revisions):
     '''
     Input:
